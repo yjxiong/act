@@ -16,6 +16,9 @@ fuse.cfg
 # Generation results
 results/
 
+ckpts/
+sim_data/
+
 ray/auth.json
 
 # Byte-compiled / optimized / DLL files
