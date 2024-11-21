@@ -39,6 +39,37 @@ class ACTPolicy(nn.Module):
 
     def configure_optimizers(self):
         return self.optimizer
+    
+
+class ACDiffPolicy(nn.Module):
+    def __init__(self, solver, training: bool=False):
+        super().__init__()
+        self.training = training
+        self.solver = solver
+        
+    
+    
+    
+    def training_forward(self, qpos, normalized_image, actions, is_pad):
+        assert actions is not None, 'actions must be provided during training'
+        actions = actions[:, :self.model.num_queries]
+        is_pad = is_pad[:, :self.model.num_queries]
+        
+        # sample noise
+        
+        # add noise to action and generate prediciton target
+        
+        # model prediction
+        
+        # calculate loss
+    
+    def sampling_forward(self, qpos, normalized_image):
+        pass
+        
+    def __call__(self, qpos, image, actions=None, is_pad=None):
+        env_state = None
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        image = normalize(image)
 
 
 class CNNMLPPolicy(nn.Module):

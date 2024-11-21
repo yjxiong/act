@@ -3,6 +3,12 @@ import torch
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
+import pandas
+from collections import OrderedDict
+from dataclasses import dataclass
+from enum import Enum
+import glob
+from PIL import Image
 
 import IPython
 e = IPython.embed
@@ -187,3 +193,120 @@ def detach_dict(d):
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+
+class SegmentType(Enum):
+    ACTION = 'action'
+    OBSERVATION = 'observation'
+    BOTH = 'both'
+    
+
+class TargetType(Enum):
+    POS = 'qpos'
+    VELOCITY = 'qvel'
+
+@dataclass
+class QuatSegment:
+    length: int
+    type: SegmentType
+    target: TargetType
+
+
+def quat2h5(data_folder: str, quat_file_name: str, 
+            h5_file: str, quat_cfg: OrderedDict[str, QuatSegment],
+            image_ext: str = 'png', cam_name='wrist', max_image_height=480)-> None:
+    """Convert the data and the processed sequence into ACT h5 file
+    Args:
+        data_folder: the folder containing the data
+        quat_file_name: the name of the file containing the quaternions
+        h5_file: the name of the h5 file to be saved
+        quat_cfg: the configuration of the quaternions
+    """
+    quat_path = os.path.join(data_folder, quat_file_name)
+    df = pandas.read_csv(quat_path, header=None, sep=' ').iloc[:, :-1] # remove the last column (NaN)
+    
+    # quat cfg should lead the same columns as the data
+    total_columns = sum([v.length for v in quat_cfg.values()]) + 1 # 1 for ts
+    assert total_columns == df.shape[1], f"Total columns in quat_cfg ({total_columns}) should match the number of columns in the data ({df.shape[1]})"
+    
+    with h5py.File(h5_file, 'w') as f:
+        # create dataset arrays
+        qpos = []
+        qvel = []
+        action = []
+        image_files = []
+        ptr = 1
+        for k, v in quat_cfg.items():
+            v_data = df.iloc[:, ptr:ptr+v.length].to_numpy()
+            # move the pointer
+            ptr += v.length
+            
+            # add data to their locations
+            if v.type == SegmentType.ACTION or v.type == SegmentType.BOTH:
+                action.append(v_data)
+                
+            if v.type == SegmentType.OBSERVATION or v.type == SegmentType.BOTH:
+                if v.target == TargetType.POS:
+                    qpos.append(v_data)
+                elif v.target == TargetType.VELOCITY:
+                    qvel.append(v_data)
+                else:
+                    raise ValueError(f"Invalid target type {v.target}")
+        
+        qpos = np.concatenate(qpos, axis=1).astype(np.float32)
+        qvel = np.concatenate(qvel, axis=1).astype(np.float32)
+        action = np.concatenate(action, axis=1).astype(np.float32)
+        print(f"qpos shape: {qpos.shape}, qvel shape: {qvel.shape}, action shape: {action.shape}")
+        
+        f.create_dataset('observations/qpos', data=qpos)
+        f.create_dataset('observations/qvel', data=qvel)
+        f.create_dataset('action', data=action)
+        
+        # process images
+        data_ts = df.iloc[:, 0].to_numpy()
+        image_files = glob.glob(os.path.join(data_folder, f'*.{image_ext}'))
+        
+        def find_closest_image(data_ts, image_ts):
+            diff = np.abs(data_ts[:, None] - image_ts[None, :])
+            idx = np.argmin(diff, axis=1)
+            min_diff = np.min(diff, axis=1)
+            return idx, min_diff
+        
+        image_ts = [float(os.path.basename(f).split('.')[0].split('_')[-1]) for f in image_files]
+        image_idx, time_diff = find_closest_image(data_ts, np.array(image_ts))
+        
+        all_images = [Image.open(p) for p in image_files]
+        resized_images = []
+        print(f"resizing {len(all_images)} images")
+        for img in all_images:
+            w, h = img.size
+            height_percent = (max_image_height / float(h))
+            width_size = int((float(w) * float(height_percent)))
+            resized_image = np.array(img.resize((width_size, max_image_height), resample=Image.Resampling.BILINEAR))
+            resized_images.append(resized_image)
+        all_images = resized_images
+        print("done resizing images")
+        image_series = np.array([all_images[i] for i in image_idx])
+        f.create_dataset(f'observations/images/{cam_name}', data=image_series)
+        f.create_dataset(f'observations/images/{cam_name}_time_diff', data=time_diff)
+        
+        # no need for aligning step in dataloader
+        f.attrs['sim'] = 1
+        
+        print(f"data saved to {h5_file}")
+        
+        
+if __name__ == "__main__":
+    # test quat2h5
+    quat_cfg = OrderedDict([
+        ('traj', QuatSegment(length=7, type=SegmentType.BOTH, target=TargetType.POS)),
+        ('handjs', QuatSegment(length=6, type=SegmentType.BOTH, target=TargetType.POS)),
+        ('handvel', QuatSegment(length=6, type=SegmentType.OBSERVATION, target=TargetType.VELOCITY)),
+        ('handforce', QuatSegment(length=6, type=SegmentType.ACTION, target=TargetType.POS)),
+    ])
+    
+    data_folder = '/home/yjxiong/act/sim_data/artly/hand_recording/11_37_05'
+    quat_file_name = 'place_cup_processed_recorded_seq1_11_37_05.quat'
+    h5_file = 'episode_test.hdf5'
+    
+    quat2h5(data_folder, quat_file_name, h5_file, quat_cfg)

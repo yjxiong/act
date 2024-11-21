@@ -2,6 +2,8 @@
 """
 DETR model and criterion classes.
 """
+from typing import Any
+
 import torch
 from torch import nn
 from torch.autograd import Variable
@@ -276,3 +278,47 @@ def build_cnnmlp(args):
 
     return model
 
+
+class DiffDETR(nn.Module):
+    """ a DETR head for diffusion policies"""
+    def __init__(self, 
+                 state_dim: int, 
+                 chunk_length: int, 
+                 transformer_cfg: dict[str, Any]
+                 )-> None:
+        super().__init__()
+        
+        self.decoder_seq_len = chunk_length
+        self.state_dim = state_dim
+        
+        self.transformer_cfg = transformer_cfg
+        
+        self.encoder = self.get_encoder(transformer_cfg)
+        self.decoder = self.get_decoder(transformer_cfg)
+        
+    def get_encoder(self, encoder_cfg: dict[str, int]) -> nn.Module:
+        raise NotImplemented
+    
+    def get_decoder(self, decoder_cfg: dict[str, int]) -> nn.Module:
+        raise NotImplemented
+        
+    def forward(self, x: torch.Tensor, 
+                visual_cond: torch.Tensor, 
+                pos_cond: torch.Tensor, 
+                timestep: torch.Tensor,
+                pooled_visual_cond: torch.Tensor = None)-> torch.Tensor:
+        """
+        Run one forward pass of the model.
+        Since it is a diffusion model, we will input timestep as well.
+        
+        Args:
+            visual_cond: torch.Tensor, shape (batch_size, num_cameras, channel, height, width)
+            qpos: torch.Tensor, shape (batch_size, qpos_dim)
+            timestep: torch.Tensor, shape (batch_size, 1)
+        """
+        
+        # run encoder
+        cond = self.encoder(visual_cond, pos_cond)
+        
+        # run decoder (noise/velocity prediction)
+        return self.decoder(x, cond, timestep, pooled_visual_cond)
