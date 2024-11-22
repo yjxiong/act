@@ -10,18 +10,21 @@ from enum import Enum
 import glob
 from PIL import Image
 import cv2
+from typing import Optional
 
 import IPython
 e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats,
+                 max_action_len=None):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
         self.is_sim = None
+        self.max_action_len = max_action_len
         self.__getitem__(0) # initialize self.is_sim
 
     def __len__(self):
@@ -63,9 +66,14 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 action_len = episode_len - max(0, start_ts - 1) # hack, to make timesteps more aligned
 
         self.is_sim = is_sim
-        padded_action = np.zeros(original_action_shape, dtype=np.float32)
+        if self.max_action_len is None:
+            padded_action = np.zeros(original_action_shape, dtype=np.float32)
+            is_pad = np.zeros(episode_len)
+        else:
+            padded_action = np.zeros((self.max_action_len, *action.shape[1:]), dtype=np.float32)
+            is_pad = np.zeros(self.max_action_len)
+        
         padded_action[:action_len] = action
-        is_pad = np.zeros(episode_len)
         is_pad[action_len:] = 1
 
         # new axis for different cameras
@@ -87,7 +95,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
-
+        # print(f"action shape {action_data.shape}, qpos shape {qpos_data.shape}, image shape {image_data.shape}")
         return image_data, qpos_data, action_data, is_pad
 
 
@@ -102,18 +110,17 @@ def get_norm_stats(dataset_dir, num_episodes):
             action = root['/action'][()]
         all_qpos_data.append(torch.from_numpy(qpos))
         all_action_data.append(torch.from_numpy(action))
-    all_qpos_data = torch.stack(all_qpos_data)
-    all_action_data = torch.stack(all_action_data)
-    all_action_data = all_action_data
+    all_qpos_data = torch.cat(all_qpos_data)
+    all_action_data = torch.cat(all_action_data)
 
     # normalize action data
-    action_mean = all_action_data.mean(dim=[0, 1], keepdim=True)
-    action_std = all_action_data.std(dim=[0, 1], keepdim=True)
+    action_mean = all_action_data.mean(dim=0, keepdim=True)
+    action_std = all_action_data.std(dim=0, keepdim=True)
     action_std = torch.clip(action_std, 1e-2, np.inf) # clipping
 
     # normalize qpos data
-    qpos_mean = all_qpos_data.mean(dim=[0, 1], keepdim=True)
-    qpos_std = all_qpos_data.std(dim=[0, 1], keepdim=True)
+    qpos_mean = all_qpos_data.mean(dim=0, keepdim=True)
+    qpos_std = all_qpos_data.std(dim=0, keepdim=True)
     qpos_std = torch.clip(qpos_std, 1e-2, np.inf) # clipping
 
     stats = {"action_mean": action_mean.numpy().squeeze(), "action_std": action_std.numpy().squeeze(),
@@ -123,7 +130,8 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
+              max_action_len: Optional[int]=None):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.8
@@ -135,10 +143,10 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
+    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, max_action_len=max_action_len)
+    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, max_action_len=max_action_len)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=2, prefetch_factor=2)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=2, prefetch_factor=2)
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
 

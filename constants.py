@@ -30,8 +30,8 @@ SIM_TASK_CONFIGS = {
         'episode_len': 500,
         'camera_names': ['top']
     },
-    'at_pick_orange': {
-        'dataset_dir': '/sim_data/pick_v2',
+    'sim_at_pick_orange': {
+        'dataset_dir': 'sim_data/pick_v2',
         'num_episodes': 50,
         'episode_len': 500,
         'camera_names': ['wrist']

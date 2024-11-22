@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package policy;
+
+service PolicyService {
+    rpc GetPolicy (PolicyRequest) returns (PolicyResponse);
+}
+
+message PolicyRequest {
+    string input = 1;
+}
+
+message PolicyResponse {
+    string output = 1;
+}

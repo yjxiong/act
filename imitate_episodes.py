@@ -100,7 +100,9 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, 
+                                                           batch_size_train, batch_size_val,
+                                                           max_action_len=args['max_action_len'])
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -109,6 +111,7 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
+    print(f"start training")
     best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
@@ -326,16 +329,20 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy_class = config['policy_class']
     policy_config = config['policy_config']
 
+    print("cuda inits")
     set_seed(seed)
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
+    print("init states")
     train_history = []
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
+
+    print(f"start first epoch")
     for epoch in tqdm(range(num_epochs)):
         print(f'\nEpoch {epoch}')
         # validation
@@ -431,5 +438,6 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
     parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+    parser.add_argument('--max_action_len', type=int, help='max_action_len', default=None, required=False)
     
     main(vars(parser.parse_args()))
