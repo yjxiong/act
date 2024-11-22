@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 import glob
 from PIL import Image
+import cv2
 
 import IPython
 e = IPython.embed
@@ -37,14 +38,22 @@ class EpisodicDataset(torch.utils.data.Dataset):
             episode_len = original_action_shape[0]
             if sample_full_episode:
                 start_ts = 0
+            elif 'sparse_visual' in root.attrs:
+                # sparse visual
+                # sample image first and then the corresponding start_ts
+                image_num = root[f'/observations/images/{self.camera_names[0]}'].shape[0]
+                image_ts = np.random.choice(image_num)
+                start_ts = root[f'/observations/images/{self.camera_names[0]}_idx'][image_ts]
             else:
+                # dense visual
                 start_ts = np.random.choice(episode_len)
+                image_ts = start_ts
             # get observation at start_ts only
             qpos = root['/observations/qpos'][start_ts]
             qvel = root['/observations/qvel'][start_ts]
             image_dict = dict()
             for cam_name in self.camera_names:
-                image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
+                image_dict[cam_name] = root[f'/observations/images/{cam_name}'][image_ts]
             # get all actions after and including start_ts
             if is_sim:
                 action = root['/action'][start_ts:]
@@ -212,6 +221,22 @@ class QuatSegment:
     target: TargetType
 
 
+def ch6toRGB(ch6_image: np.array) -> tuple[np.array, np.array, np.array]:
+    ch6 = ch6_image.view(dtype=np.uint8)
+    rgb = ch6[:, :, :3][:, :, ::-1]
+    l = np.repeat(ch6[:, :, 3:4], 3, axis=2) 
+    r = np.repeat(ch6[:, :, 4:5], 3, axis=2)
+    return rgb, l, r
+
+
+def read_ch6_image(image_path: str)->np.array:
+    image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    return ch6toRGB(image)[0]
+
+
+VISUAL_MISSALIGNMENT_THRESHOLD = 0.04
+
+
 def quat2h5(data_folder: str, quat_file_name: str, 
             h5_file: str, quat_cfg: OrderedDict[str, QuatSegment],
             image_ext: str = 'png', cam_name='wrist', max_image_height=480)-> None:
@@ -265,33 +290,40 @@ def quat2h5(data_folder: str, quat_file_name: str,
         # process images
         data_ts = df.iloc[:, 0].to_numpy()
         image_files = glob.glob(os.path.join(data_folder, f'*.{image_ext}'))
-        
-        def find_closest_image(data_ts, image_ts):
+        image_files.sort()
+
+        def find_closest_ts(data_ts, image_ts):
             diff = np.abs(data_ts[:, None] - image_ts[None, :])
-            idx = np.argmin(diff, axis=1)
-            min_diff = np.min(diff, axis=1)
+            idx = np.argmin(diff, axis=0)
+            min_diff = np.min(diff, axis=0)
             return idx, min_diff
         
-        image_ts = [float(os.path.basename(f).split('.')[0].split('_')[-1]) for f in image_files]
-        image_idx, time_diff = find_closest_image(data_ts, np.array(image_ts))
+        image_ts = [float(os.path.basename(f)[:-4].split('_')[-1]) for f in image_files]
+        visual_idx, time_diff = find_closest_ts(data_ts, np.array(image_ts))
+
         
-        all_images = [Image.open(p) for p in image_files]
+        all_images = [read_ch6_image(p) for p in image_files]
         resized_images = []
         print(f"resizing {len(all_images)} images")
         for img in all_images:
-            w, h = img.size
+            h, w, c = img.shape
             height_percent = (max_image_height / float(h))
             width_size = int((float(w) * float(height_percent)))
-            resized_image = np.array(img.resize((width_size, max_image_height), resample=Image.Resampling.BILINEAR))
+            # currently take only the RGB channel
+            resized_image = cv2.resize(img, (width_size, max_image_height), interpolation=cv2.INTER_LINEAR)
             resized_images.append(resized_image)
         all_images = resized_images
         print("done resizing images")
-        image_series = np.array([all_images[i] for i in image_idx])
+        take_image = time_diff<VISUAL_MISSALIGNMENT_THRESHOLD
+        image_series = np.array(all_images)[take_image, :, :]
         f.create_dataset(f'observations/images/{cam_name}', data=image_series)
-        f.create_dataset(f'observations/images/{cam_name}_time_diff', data=time_diff)
+        f.create_dataset(f'observations/images/{cam_name}_time_diff', data=time_diff[take_image])
+        f.create_dataset(f'observations/images/{cam_name}_idx', data=visual_idx[take_image])
+        print(f"got {image_series.shape[0]} images")
         
         # no need for aligning step in dataloader
         f.attrs['sim'] = 1
+        f.attrs['sparse_visual'] = 1
         
         print(f"data saved to {h5_file}")
         
@@ -305,8 +337,8 @@ if __name__ == "__main__":
         ('handforce', QuatSegment(length=6, type=SegmentType.ACTION, target=TargetType.POS)),
     ])
     
-    data_folder = '/home/yjxiong/act/sim_data/artly/hand_recording/11_37_05'
-    quat_file_name = 'place_cup_processed_recorded_seq1_11_37_05.quat'
+    data_folder = '/home/yjxiong/artly_data/hand_recording/11_37_54'
+    quat_file_name = 'processed_recorded_seq1_11_37_54.quat'
     h5_file = 'episode_test.hdf5'
     
     quat2h5(data_folder, quat_file_name, h5_file, quat_cfg)
